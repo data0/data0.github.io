@@ -1,0 +1,199 @@
+---
+title: 'Course Project: Prediction Assignment Writeup'
+author: 'Author: Serge'
+date: "November 13, 2015"
+output: html_document
+---
+
+
+###Executive Summary  
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. 6 participants were asked to perform barbell lifts correctly and incorrectly in 5 different ways. In this project, data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants has been used to predict the manner in which they did the exercise. Selected Random Forest model shows 0.9788 accuracy for cross validation data set and all 20 test submissions were correct.  
+
+***
+
+###Data Loading, Processing and Exploratory analysis  
+
+The data for this project come from http://groupware.les.inf.puc-rio.br/har.  
+
+```{r, warning=FALSE, message=FALSE}
+library(caret)
+wd="~/work/Prediction-Assignment-Writeup"
+setwd(wd)
+
+# loading  data
+
+if(! file.exists("pml-testing.csv")){
+    fileURL="https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+    download.file(fileURL, destfile="pml-training.csv", method="curl", quiet="True")
+    fileURL="https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+    download.file(fileURL, destfile="pml-testing.csv", method="curl", quiet="True")    
+}
+
+pml.training = read.csv("pml-training.csv")
+pml.testing = read.csv("pml-testing.csv")
+
+
+```
+Detailed data summary can be found in the Appendix.
+Training data set consists of `r ncol(pml.training)` columns and `r nrow(pml.training)` observations.
+Testing data set consists of `r ncol(pml.testing)` columns and `r nrow(pml.testing)` observations.
+
+Based on an assumption, that variables "X", timestamps, "num_window" and "num_window" do not bring any added value to predict the manner of the exercise, these variables will be removed from both data sets.  
+
+```{r, warning=FALSE, message=FALSE}
+pml.training = pml.training[,- c(1,3:7)]
+pml.testing = pml.testing[,- c(1,3:7)]
+```
+
+
+Next step is to identify uninformative features, including "not available", in testing data set and remove from both data sets.
+"User_name" variable to be converted from factor to numeric to keep data consistency. Finally, we'll split training set into sub-training/test sets for further validation.  
+
+```{r, warning=FALSE, message=FALSE}
+# select informative features from pml.testing set and remove from both data sets
+pml.testing.cols = NULL
+for (f in 1:(dim(pml.testing)[2]-1)) {
+  if(length(unique(pml.testing[[f]]))>1){
+    pml.testing.cols = c(pml.testing.cols,f)
+  }
+}
+
+pml.training = data.frame(pml.training[pml.testing.cols], classe=pml.training$classe)
+pml.testing = pml.testing[pml.testing.cols]
+
+# convert "user_name" from factor to numeric
+pml.training$user_name=as.numeric(pml.training$user_name)
+pml.testing$user_name=as.numeric(pml.testing$user_name)
+
+# create train/test data sets
+set.seed(10)
+inTrain <- createDataPartition(y=pml.training$classe,p=0.75, list=FALSE)
+training <- pml.training[inTrain,]
+testing <- pml.training[-inTrain,]
+```
+
+
+We still have relatively big amount of regressors - `r ncol(pml.training) -1`.To reduce data dimension, we'll preprocess data set with PCA method (99% cutoff for the cumulative percent of variance to be retained). PCA will help reduce number of predictors, and noise, avoid overfitting on training data and minimize out of sample error rate.  
+
+
+```{r, warning=FALSE, message=FALSE}
+
+# create PCA preprocess object
+PC.preProc <- preProcess(training[,-ncol(training)], method="pca", thresh = 0.99)
+training.PC <- predict(PC.preProc, training[,-ncol(training)])
+testing.PC <- predict(PC.preProc, testing[,-ncol(testing)])
+
+training.PC=data.frame(training.PC, classe=training$classe)
+
+```
+
+This gives us `r PC.preProc$numComp` PCA features instead of `r ncol(pml.training) -1`. 
+
+Diagram 1 (see Appendix below) shows PCA plot of the first two (main) components colored by "classe" variable (outcome). We can identify at least 4 clusters  (most likely 5 or 6, taking in to account size of the largest cluster).
+
+In the next diagram (Diagram 2), we colored PCA plot by "user-name". 6 cluster (users) are clearly identified on this plot.
+
+It would be interesting to predict each "user_name" based on measured data, but this question is out of the project's scope.  
+
+***
+
+###Model Selection, Training and Prediction  
+
+Taking in to account that Random Forest is one of the most powerful ensemble learning method for classification, let's use "rf" method, train our model on preprocessed training data set, predict outcome for sub-test(validation) set and print a confusion matrix.  
+
+
+
+```{r, warning=FALSE, message=FALSE}
+
+# train the data using random forest model
+rf.fit <- train(classe ~ .,method="rf",data=training.PC)
+rf.fit
+
+# predict outcome for test/validation data set using the random forest model and print the confusion matrix
+testing.pred <- predict(rf.fit,testing.PC)
+confusionMatrix(testing$classe,testing.pred)
+```
+
+Random Forest model shows `r confusionMatrix(testing$classe,testing.pred)$overall[1]` accuracy and `r 1-confusionMatrix(testing$classe,testing.pred)$overall[1]` out of sample error.  
+
+***
+
+###Submission Validation and Conclusion  
+
+Finally, let's apply the machine learning algorithm we built to each of the 20 test cases in the testing data set.  
+
+
+```{r, warning=FALSE, message=FALSE}
+#predict submission outcome for test data set using the random forest model
+pml.testing.pred <- predict(rf.fit, predict(PC.preProc, pml.testing))
+pml.testing.pred
+
+answers = as.character(pml.testing.pred)
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+pml_write_files(answers)
+
+```
+
+All 20 test cases have been submitted and correct. Therefore, our assumption about `r 1-confusionMatrix(testing$classe,testing.pred)$overall[1]` out of sample error rate is most likely valid.  
+
+***
+
+###Appendix  
+
+####Data set summary   
+```{r, warning=FALSE, message=FALSE}
+dim(pml.training)
+dim(pml.testing)
+head(pml.training)
+head(pml.testing)
+names(pml.training)
+names(pml.testing)
+summary(pml.training)
+summary(pml.testing)
+str(pml.training)
+str(pml.testing)
+```
+
+***
+
+####PCA Plot of the First Two components by "Classe" Variable  
+
+```{r, warning=FALSE, message=FALSE}
+#PCA Plot of the First Two components by "Classe" Variable
+typeColor <- training$classe
+# plot the first two principal components
+plot(training.PC$PC1,training.PC$PC2,col=typeColor,xlab="PC1",ylab="PC2")
+```
+
+Diagram 1  
+
+***
+
+####PCA Plot of the First Two components by "User_name" Variable   
+
+```{r, warning=FALSE, message=FALSE}
+#PCA Plot of the First Two components by "User_name" Variable
+typeColor <- training$user_name
+# plot the first two principal components
+plot(training.PC$PC1,training.PC$PC2,col=typeColor,xlab="PC1",ylab="PC2")
+```
+
+Diagram 2  
+
+***
+
+
+
+
+
+
+
+
+
